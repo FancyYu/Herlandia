@@ -1,0 +1,390 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Herlandia - 宁静乌托邦</title>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+        body { margin: 0; overflow: hidden; background: #fff5f7; font-family: 'Segoe UI', sans-serif; transition: background 2s ease; }
+        #ui-layer { position: absolute; top: 0; left: 0; width: 100%; height: 100%; pointer-events: none; }
+        .pointer-auto { pointer-events: auto; }
+        canvas { display: block; }
+        .glass-panel {
+            background: rgba(255, 255, 255, 0.85);
+            backdrop-filter: blur(12px);
+            border: 1px solid rgba(255, 255, 255, 0.6);
+            border-radius: 24px;
+            box-shadow: 0 8px 32px rgba(0, 0, 0, 0.05);
+        }
+        .btn-action:hover { transform: translateY(-3px) scale(1.02); }
+    </style>
+</head>
+<body>
+
+    <div id="ui-layer" class="flex flex-col justify-between p-6">
+        <!-- 顶部：状态与场景切换 -->
+        <div class="flex justify-between items-start pointer-auto">
+            <div class="flex flex-col gap-3">
+                <div class="glass-panel p-4 flex gap-4">
+                    <div class="flex items-center gap-2"><span class="text-pink-400">🌿</span><span id="res-count" class="font-bold text-gray-700">150</span></div>
+                    <div class="h-4 w-[1px] bg-gray-300"></div>
+                    <div class="flex items-center gap-2">当前环境: <span id="weather-text" class="font-bold text-pink-500">鲜花节</span></div>
+                </div>
+                <!-- 场景控制器 -->
+                <div class="glass-panel p-2 flex gap-1">
+                    <button onclick="setWeather('sunny')" class="p-2 hover:bg-white/50 rounded-lg text-lg" title="晴天">☀️</button>
+                    <button onclick="setWeather('flower')" class="p-2 hover:bg-white/50 rounded-lg text-lg" title="鲜花节">🌸</button>
+                    <button onclick="setWeather('rainy')" class="p-2 hover:bg-white/50 rounded-lg text-lg" title="雨天">🌧️</button>
+                    <button onclick="setWeather('night')" class="p-2 hover:bg-white/50 rounded-lg text-lg" title="静谧夜">🌙</button>
+                </div>
+            </div>
+            
+            <div class="flex flex-col items-end gap-3">
+                <div class="glass-panel px-6 py-4 text-gray-600 font-semibold tracking-wider">🌸 宁静乌托邦：完全体</div>
+                <div class="flex gap-2">
+                    <button onclick="saveScene()" class="btn-action glass-panel px-4 py-2 text-green-600 font-bold text-sm shadow-sm pointer-auto">💾 保存</button>
+                    <button onclick="clearIsland()" class="btn-action glass-panel px-4 py-2 text-red-500 font-bold text-sm shadow-sm pointer-auto">🧹 重置</button>
+                </div>
+            </div>
+        </div>
+
+        <!-- 建造工具栏 -->
+        <div class="absolute right-6 top-1/2 -translate-y-1/2 flex flex-col gap-3 pointer-auto">
+            <button onclick="addModule('house')" class="btn-action glass-panel w-16 h-16 flex flex-col items-center justify-center">🏠<span class="text-[9px] mt-1">小屋</span></button>
+            <button onclick="addModule('workshop')" class="btn-action glass-panel w-16 h-16 flex flex-col items-center justify-center">🎨<span class="text-[9px] mt-1">工坊</span></button>
+            <button onclick="addModule('fountain')" class="btn-action glass-panel w-16 h-16 flex flex-col items-center justify-center"> ⛲️<span class="text-[9px] mt-1">喷泉</span></button>
+            <button onclick="addModule('garden')" class="btn-action glass-panel w-16 h-16 flex flex-col items-center justify-center">🌸<span class="text-[9px] mt-1">花园</span></button>
+        </div>
+
+        <!-- 底部 -->
+        <div class="w-full flex flex-col items-center gap-2 pointer-auto">
+            <div id="ai-message-box" class="glass-panel px-10 py-4 text-gray-600 text-sm hidden"></div>
+            <div class="glass-panel px-8 py-3 flex gap-6 text-gray-500 text-xs items-center">
+                <div class="flex items-center gap-2 font-medium">🎮 操作:</div>
+                <div><kbd class="bg-gray-100 px-1 border rounded shadow-sm text-gray-700 font-sans">W/A/S/D</kbd> 或键盘方向键控制角色移动</div>
+            </div>
+        </div>
+    </div>
+
+    <script type="module">
+        import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
+        import { getAuth, signInAnonymously, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
+        import { getFirestore, doc, setDoc, getDoc } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
+
+        const firebaseConfig = JSON.parse(__firebase_config);
+        const app = initializeApp(firebaseConfig);
+        const auth = getAuth(app);
+        const db = getFirestore(app);
+        const appId = typeof __app_id !== 'undefined' ? __app_id : 'utopia-v4';
+
+        let scene, camera, renderer, raycaster, mouse;
+        let islandBase, petalGroup, rainParticles, player, centralTree;
+        let fireflies = [];
+        const modules = [];
+        let isDragging = false, selectedObject = null, dragOffset = new THREE.Vector3();
+        let currentUser = null;
+        let currentWeather = 'flower';
+
+        const keys = { w: false, a: false, s: false, d: false, arrowup: false, arrowdown: false, arrowleft: false, arrowright: false };
+        const playerSpeed = 0.12;
+
+        const themeColors = {
+            sunny: 0xFDF2F8, flower: 0xFFF5F7, night: 0x1E1B4B, rainy: 0xCBD5E1,
+            island: 0xCCFBF1, player: 0x8B5CF6, wood: 0x78350F, pink: 0xFBCFE8
+        };
+
+        async function init() {
+            await signInAnonymously(auth);
+            onAuthStateChanged(auth, user => { if(user) { currentUser = user; loadScene(); } });
+
+            scene = new THREE.Scene();
+            scene.background = new THREE.Color(themeColors.flower);
+            scene.fog = new THREE.Fog(themeColors.flower, 20, 100);
+
+            const aspect = window.innerWidth / window.innerHeight;
+            const d = 15;
+            camera = new THREE.OrthographicCamera(-d * aspect, d * aspect, d, -d, 1, 1000);
+            camera.position.set(30, 30, 30);
+            camera.lookAt(0, 0, 0);
+
+            renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
+            renderer.setSize(window.innerWidth, window.innerHeight);
+            renderer.shadowMap.enabled = true;
+            document.body.appendChild(renderer.domElement);
+
+            raycaster = new THREE.Raycaster();
+            mouse = new THREE.Vector2();
+
+            setupLights();
+            createIsland();
+            createCentralTree();
+            createPlayer();
+            createWeatherSystems();
+            
+            setWeather('flower');
+            animate();
+
+            window.addModule = addModule;
+            window.clearIsland = clearIsland;
+            window.saveScene = saveScene;
+            window.setWeather = setWeather;
+
+            window.addEventListener('resize', onWindowResize);
+            window.addEventListener('mousedown', onMouseDown);
+            window.addEventListener('mousemove', onMouseMove);
+            window.addEventListener('mouseup', onMouseUp);
+            window.addEventListener('keydown', e => { const k = e.key.toLowerCase(); if(keys.hasOwnProperty(k)) keys[k] = true; });
+            window.addEventListener('keyup', e => { const k = e.key.toLowerCase(); if(keys.hasOwnProperty(k)) keys[k] = false; });
+        }
+
+        function setupLights() {
+            const amb = new THREE.AmbientLight(0xffffff, 0.8);
+            amb.name = "ambientLight";
+            scene.add(amb);
+            const sun = new THREE.DirectionalLight(0xffffff, 0.6);
+            sun.position.set(10, 25, 10);
+            sun.castShadow = true;
+            sun.name = "sunLight";
+            scene.add(sun);
+        }
+
+        function createIsland() {
+            islandBase = new THREE.Mesh(
+                new THREE.CylinderGeometry(13, 14, 2, 32),
+                new THREE.MeshPhongMaterial({ color: themeColors.island })
+            );
+            islandBase.receiveShadow = true;
+            islandBase.position.y = -1;
+            scene.add(islandBase);
+        }
+
+        function createCentralTree() {
+            const tree = new THREE.Group();
+            const trunk = new THREE.Mesh(new THREE.CylinderGeometry(0.5, 0.7, 5, 8), new THREE.MeshPhongMaterial({ color: themeColors.wood }));
+            trunk.position.y = 2.5;
+            tree.add(trunk);
+            
+            const foliageColors = [0xFBCFE8, 0xF9A8D4, 0xF472B6];
+            for(let i=0; i<8; i++) {
+                const part = new THREE.Mesh(
+                    new THREE.IcosahedronGeometry(2 + Math.random(), 0), 
+                    new THREE.MeshPhongMaterial({ color: foliageColors[i % 3] })
+                );
+                part.position.set(Math.sin(i)*1.5, 5 + Math.random()*2, Math.cos(i)*1.5);
+                tree.add(part);
+            }
+            centralTree = tree;
+            scene.add(tree);
+
+            // 萤火虫
+            for(let i=0; i<12; i++) {
+                const f = new THREE.Mesh(new THREE.SphereGeometry(0.1, 4, 4), new THREE.MeshBasicMaterial({ color: 0xFFF7ED }));
+                f.userData = { angle: Math.random()*Math.PI*2, speed: 0.01 + Math.random()*0.01, radius: 4+Math.random()*3, yBase: 2+Math.random()*4 };
+                scene.add(f); fireflies.push(f);
+            }
+        }
+
+        function createPlayer() {
+            player = new THREE.Group();
+            const body = new THREE.Mesh(new THREE.SphereGeometry(0.6, 16, 16), new THREE.MeshPhongMaterial({ color: themeColors.player, emissive: 0x4c1d95, emissiveIntensity: 0.3 }));
+            body.castShadow = true;
+            player.add(body);
+            const ring = new THREE.Mesh(new THREE.TorusGeometry(0.8, 0.04, 8, 32), new THREE.MeshBasicMaterial({ color: 0xA78BFA, transparent: true, opacity: 0.5 }));
+            ring.rotation.x = Math.PI/2;
+            player.add(ring);
+            player.position.set(5, 0.6, 5);
+            scene.add(player);
+        }
+
+        function createWeatherSystems() {
+            // 雨
+            const rainGeo = new THREE.BufferGeometry();
+            const rainCount = 1000;
+            const rainPos = new Float32Array(rainCount * 3);
+            for(let i=0; i<rainCount*3; i+=3) { rainPos[i]=(Math.random()-0.5)*50; rainPos[i+1]=Math.random()*30; rainPos[i+2]=(Math.random()-0.5)*50; }
+            rainGeo.setAttribute('position', new THREE.BufferAttribute(rainPos, 3));
+            rainParticles = new THREE.Points(rainGeo, new THREE.PointsMaterial({ color: 0x93C5FD, size: 0.1, transparent: true, opacity: 0 }));
+            scene.add(rainParticles);
+
+            // 花瓣
+            petalGroup = new THREE.Group();
+            const petalGeom = new THREE.BoxGeometry(0.3, 0.02, 0.3);
+            const petalMat = new THREE.MeshPhongMaterial({ color: 0xFFC0CB, transparent: true, opacity: 0.9, side: THREE.DoubleSide });
+            for(let i=0; i<200; i++) {
+                const p = new THREE.Mesh(petalGeom, petalMat);
+                p.position.set((Math.random()-0.5)*40, Math.random()*30, (Math.random()-0.5)*40);
+                p.userData = { speedY: 0.03 + Math.random()*0.04, rotX: Math.random()*0.02, rotZ: Math.random()*0.02, sway: Math.random()*Math.PI*2 };
+                petalGroup.add(p);
+            }
+            scene.add(petalGroup);
+            petalGroup.visible = false;
+        }
+
+        function setWeather(type) {
+            currentWeather = type;
+            const text = document.getElementById('weather-text');
+            const amb = scene.getObjectByName("ambientLight");
+            const sun = scene.getObjectByName("sunLight");
+
+            rainParticles.material.opacity = 0;
+            petalGroup.visible = false;
+
+            if(type === 'sunny') {
+                text.innerText = "晴朗"; text.className = "font-bold text-pink-500";
+                scene.background.set(themeColors.sunny); scene.fog.color.set(themeColors.sunny);
+                amb.intensity = 0.8; sun.intensity = 0.6;
+            } else if(type === 'flower') {
+                text.innerText = "鲜花节"; text.className = "font-bold text-pink-400";
+                scene.background.set(themeColors.flower); scene.fog.color.set(themeColors.flower);
+                amb.intensity = 0.9; sun.intensity = 0.4;
+                petalGroup.visible = true;
+            } else if(type === 'rainy') {
+                text.innerText = "细雨"; text.className = "font-bold text-blue-500";
+                scene.background.set(themeColors.rainy); scene.fog.color.set(themeColors.rainy);
+                amb.intensity = 0.4; sun.intensity = 0.2;
+                rainParticles.material.opacity = 0.6;
+            } else if(type === 'night') {
+                text.innerText = "静谧夜"; text.className = "font-bold text-indigo-800";
+                scene.background.set(themeColors.night); scene.fog.color.set(themeColors.night);
+                amb.intensity = 0.2; sun.intensity = 0.1;
+            }
+        }
+
+        function addModule(type, x, z, skipRes = false) {
+            const group = new THREE.Group();
+            if(type === 'house') {
+                const b = new THREE.Mesh(new THREE.BoxGeometry(1.8, 1.5, 1.8), new THREE.MeshPhongMaterial({color: 0xE9D5FF}));
+                const r = new THREE.Mesh(new THREE.ConeGeometry(1.4, 1.2, 4), new THREE.MeshPhongMaterial({color: 0xFBCFE8}));
+                r.position.y = 1.35; r.rotation.y = Math.PI/4; group.add(b,r);
+            } else if(type === 'workshop') {
+                const b = new THREE.Mesh(new THREE.CylinderGeometry(1, 1, 1.8, 6), new THREE.MeshPhongMaterial({color: 0xBFDBFE}));
+                const r = new THREE.Mesh(new THREE.SphereGeometry(1.1, 8, 8, 0, Math.PI*2, 0, Math.PI/2), new THREE.MeshPhongMaterial({color: 0xCCFBF1}));
+                r.position.y = 0.9; group.add(b,r);
+            } else if(type === 'fountain') {
+                const b = new THREE.Mesh(new THREE.CylinderGeometry(1.5, 1.8, 0.5, 16), new THREE.MeshPhongMaterial({color: 0xdddddd}));
+                const w = new THREE.Mesh(new THREE.CylinderGeometry(1.3, 1.3, 0.1, 16), new THREE.MeshPhongMaterial({color: 0x60A5FA, transparent: true, opacity: 0.7}));
+                w.position.y = 0.25; group.add(b, w);
+            } else if(type === 'garden') {
+                const b = new THREE.Mesh(new THREE.BoxGeometry(2.5, 0.2, 2.5), new THREE.MeshPhongMaterial({color: 0x86EFAC}));
+                group.add(b);
+                for(let i=0; i<5; i++) {
+                    const f = new THREE.Mesh(new THREE.SphereGeometry(0.25, 6, 6), new THREE.MeshPhongMaterial({color: 0xF472B6}));
+                    f.position.set((Math.random()-0.5)*1.8, 0.3, (Math.random()-0.5)*1.8); group.add(f);
+                }
+            }
+            group.position.set(x !== undefined ? x : (Math.random()-0.5)*18, 0.75, z !== undefined ? z : (Math.random()-0.5)*18);
+            group.userData.moduleType = type;
+            group.traverse(c => { if(c.isMesh) { c.castShadow = true; c.receiveShadow = true; } });
+            scene.add(group); modules.push(group);
+            if(!skipRes) document.getElementById('res-count').innerText = Math.max(0, parseInt(document.getElementById('res-count').innerText) - 10);
+        }
+
+        function clearIsland(notify = true) {
+            modules.forEach(m => scene.remove(m)); modules.length = 0;
+            document.getElementById('res-count').innerText = "150";
+            player.position.set(5, 0.6, 5);
+            if(notify) showMessage("🧹 岛屿重归纯净。", 2000);
+        }
+
+        async function saveScene() {
+            if(!currentUser) return;
+            const data = { modules: modules.map(m => ({ type: m.userData.moduleType, pos: { x: m.position.x, z: m.position.z } })), weather: currentWeather };
+            await setDoc(doc(db, 'artifacts', appId, 'users', currentUser.uid, 'settings', 'landscape'), data);
+            showMessage("✨ 存档成功。", 3000);
+        }
+
+        async function loadScene() {
+            const snap = await getDoc(doc(db, 'artifacts', appId, 'users', currentUser.uid, 'settings', 'landscape'));
+            if(snap.exists()) {
+                const data = snap.data(); clearIsland(false);
+                if(data.modules) data.modules.forEach(m => addModule(m.type, m.pos.x, m.pos.z, true));
+                if(data.weather) setWeather(data.weather);
+            }
+        }
+
+        function showMessage(text, dur) {
+            const box = document.getElementById('ai-message-box');
+            box.innerText = text; box.classList.remove('hidden');
+            setTimeout(() => box.classList.add('hidden'), dur);
+        }
+
+        function onMouseDown(e) {
+            if(e.target.tagName !== 'CANVAS') return;
+            mouse.x = (e.clientX/window.innerWidth)*2-1; mouse.y = -(e.clientY/window.innerHeight)*2+1;
+            raycaster.setFromCamera(mouse, camera);
+            const hits = raycaster.intersectObjects(modules, true);
+            if(hits.length > 0) {
+                isDragging = true;
+                let o = hits[0].object; while(o.parent && o.parent !== scene) o = o.parent;
+                selectedObject = o;
+                const g = raycaster.intersectObject(islandBase);
+                if(g.length > 0) dragOffset.copy(g[0].point).sub(selectedObject.position);
+            }
+        }
+
+        function onMouseMove(e) {
+            if(!isDragging || !selectedObject) return;
+            mouse.x = (e.clientX/window.innerWidth)*2-1; mouse.y = -(e.clientY/window.innerHeight)*2+1;
+            raycaster.setFromCamera(mouse, camera);
+            const g = raycaster.intersectObject(islandBase);
+            if(g.length > 0) { selectedObject.position.x = g[0].point.x - dragOffset.x; selectedObject.position.z = g[0].point.z - dragOffset.z; }
+        }
+
+        function onMouseUp() { isDragging = false; selectedObject = null; }
+        function onWindowResize() {
+            const aspect = window.innerWidth / window.innerHeight; const d = 15;
+            camera.left = -d * aspect; camera.right = d * aspect; camera.updateProjectionMatrix();
+            renderer.setSize(window.innerWidth, window.innerHeight);
+        }
+
+        function animate() {
+            requestAnimationFrame(animate);
+            const time = Date.now() * 0.001;
+
+            // 玩家移动
+            const move = new THREE.Vector3(0, 0, 0);
+            if(keys.a || keys.arrowleft) move.z += 1; if(keys.d || keys.arrowright) move.z -= 1;
+            if(keys.w || keys.arrowup) move.x -= 1; if(keys.s || keys.arrowdown) move.x += 1;
+            if(move.length() > 0) {
+                move.normalize();
+                const ax = (move.x - move.z) * 0.707, az = (move.x + move.z) * 0.707;
+                const nx = player.position.x + ax * playerSpeed, nz = player.position.z + az * playerSpeed;
+                if(Math.sqrt(nx*nx + nz*nz) < 12.5) { player.position.x = nx; player.position.z = nz; }
+                player.position.y = 0.6 + Math.sin(time * 10) * 0.1;
+                player.rotation.y = THREE.MathUtils.lerp(player.rotation.y, Math.atan2(ax, az), 0.1);
+            } else { player.position.y = 0.6 + Math.sin(time * 2) * 0.05; }
+
+            // 萤火虫
+            fireflies.forEach(f => {
+                f.userData.angle += f.userData.speed;
+                f.position.x = Math.cos(f.userData.angle) * f.userData.radius;
+                f.position.z = Math.sin(f.userData.angle) * f.userData.radius;
+                f.position.y = f.userData.yBase + Math.sin(time + f.userData.angle)*0.8;
+            });
+
+            // 雨
+            if(currentWeather === 'rainy') {
+                const pos = rainParticles.geometry.attributes.position.array;
+                for(let i=1; i<pos.length; i+=3) { pos[i] -= 0.5; if(pos[i] < -2) pos[i] = 25; }
+                rainParticles.geometry.attributes.position.needsUpdate = true;
+            }
+
+            // 花瓣
+            if(currentWeather === 'flower') {
+                petalGroup.children.forEach(p => {
+                    p.position.y -= p.userData.speedY;
+                    p.position.x += Math.sin(time + p.userData.sway) * 0.03;
+                    p.rotation.x += p.userData.rotX; p.rotation.z += p.userData.rotZ;
+                    if(p.position.y < -1) { p.position.y = 25; p.position.x = (Math.random()-0.5)*40; }
+                });
+            }
+
+            renderer.render(scene, camera);
+        }
+
+        init();
+    </script>
+</body>
+</html>
