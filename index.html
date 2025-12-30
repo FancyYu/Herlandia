@@ -105,6 +105,11 @@
             island: 0xCCFBF1, player: 0x8B5CF6, wood: 0x78350F, pink: 0xFBCFE8
         };
 
+        window.setWeather = setWeather;
+        window.saveScene = saveScene;
+        window.clearIsland = clearIsland;
+        window.addModule = addModule;
+
         async function init() {
             await signInAnonymously(auth);
             onAuthStateChanged(auth, user => { if(user) { currentUser = user; loadScene(); } });
@@ -135,11 +140,6 @@
             
             setWeather('flower');
             animate();
-
-            window.addModule = addModule;
-            window.clearIsland = clearIsland;
-            window.saveScene = saveScene;
-            window.setWeather = setWeather;
 
             window.addEventListener('resize', onWindowResize);
             window.addEventListener('mousedown', onMouseDown);
